@@ -31,6 +31,7 @@
 # POSSIBILITY OF SUCH DAMAGE.
 
 import serial
+import time
 
 import rclpy
 
@@ -46,24 +47,29 @@ def main(args=None):
     serial_port = driver.declare_parameter('port', '/dev/ttyUSB0').value
     serial_baud = driver.declare_parameter('baud', 4800).value
 
-    try:
-        GPS = serial.Serial(port=serial_port, baudrate=serial_baud, timeout=2)
-        driver.get_logger().info("Successfully connected to {0} at {1}.".format(serial_port, serial_baud))
+    # Connection-loop: connect and keep receiving. If connection fails, retry
+    while rclpy.ok():
         try:
-            while rclpy.ok():
-                data = GPS.readline().strip()
-                try:
-                    if isinstance(data, bytes):
-                        data = data.decode("utf-8")
-                    driver.add_sentence(data, frame_id)
-                except ValueError as e:
-                    driver.get_logger().warn(
-                        "Value error, likely due to missing fields in the NMEA message. Error was: %s. "
-                        "Please report this issue at github.com/ros-drivers/nmea_navsat_driver, including a bag file "
-                        "with the NMEA sentences that caused it." % e)
-
-        except Exception as e:
-            driver.get_logger().error("Ros error: {0}".format(e))
-            GPS.close()  # Close GPS serial port
-    except serial.SerialException as ex:
-        driver.get_logger().fatal("Could not open serial port: I/O error({0}): {1}".format(ex.errno, ex.strerror))
+            driver.get_logger().info("Attempting to connect to %s at %d." % (serial_port, serial_baud))
+            with serial.Serial(port=serial_port, baudrate=serial_baud, timeout=2) as GPS:
+                driver.get_logger().info("Successfully connected to %s at %d." % (serial_port, serial_baud))
+                # Receive-loop: When we're connected, keep receiving data until that fails
+                while rclpy.ok():
+                    try:
+                        data = GPS.readline().strip()
+                        if isinstance(data, bytes):
+                            data = data.decode("utf-8")
+                        driver.add_sentence(data, frame_id)
+                    except ValueError as e:
+                        driver.get_logger().warn(
+                            "Value error, likely due to missing fields in the NMEA message. Error was: %s. "
+                            "Please report this issue at github.com/ros-drivers/nmea_navsat_driver, including a bag file "
+                            "with the NMEA sentences that caused it." % e)
+                # rclpy.ok() returned false, which means we should shut down
+                # The context manager will handle closing the serial port
+                return 0
+        except serial.SerialException as ex:
+            driver.get_logger().error("Serial Port I/O error(%s): %s" % (ex.errno, ex.strerror))
+        except OSError as e:
+            driver.get_logger().error("OS error: %s" % e)
+        time.sleep(5.0)
